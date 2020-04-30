@@ -13,6 +13,14 @@ Resources:
             x-amazon-apigateway-any-method:
               responses: {}
               isDefaultRoute: true
+              x-amazon-apigateway-integration:
+                httpMethod: ANY
+                type: http_proxy
+                uri: http://apidotnetframework-prod.us-east-1.elasticbeanstalk.com/
+                payloadFormatVersion: '1.0'
+          /weatherforecast:
+            x-amazon-apigateway-any-method:
+              responses: {}
       FailOnWarnings: true
   WebApi:
     Type: AWS::Serverless::Function
@@ -22,7 +30,7 @@ Resources:
         - Stack ${StackTagName} Environment ${EnvironmentTagName} Function ${ResourceName}
         - ResourceName: WebApi
       CodeUri: webapi
-      Handler: webapi::Lambda.LambdaEntryPoint::FunctionHandlerAsync
+      Handler: webapi::webapi.LambdaEntryPoint::FunctionHandlerAsync
       Runtime: dotnetcore3.1
       MemorySize: 3008
       Timeout: 30
@@ -30,14 +38,85 @@ Resources:
       Policies:
         - AWSXrayWriteOnlyAccess
       Events:
-        HttpApiANYdefault:
+        HttpApiANYweatherforecast:
           Type: HttpApi
           Properties:
-            Path: /$default
+            Path: /weatherforecast
             Method: ANY
             ApiId: !Ref HttpApi
             PayloadFormatVersion: '2.0'
             TimeoutInMillis: 29000
+      Environment:
+        Variables:
+          DB_ID: !If
+            - DatabaseUseExistingResource
+            - !Ref DatabaseExistingResource
+            - !Ref Database
+          DB_ADDRESS: !If
+            - DatabaseUseExistingResource
+            - !GetAtt DatabaseExistingResource.Endpoint.Address
+            - !GetAtt Database.Endpoint.Address
+          DB_PORT: !If
+            - DatabaseUseExistingResource
+            - !GetAtt DatabaseExistingResource.Endpoint.Port
+            - !GetAtt Database.Endpoint.Port
+          DB_ARN: !If
+            - DatabaseUseExistingResource
+            - !Sub arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${DatabaseExistingResource}
+            - !Sub arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${Database}
+  Database:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      BackupRetentionPeriod: 1
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      Engine: aurora
+      EngineMode: serverless
+      MasterUsername: root
+      MasterUserPassword: mytemporarypassword
+      ScalingConfiguration:
+        AutoPause: false
+        MinCapacity: 2
+        MaxCapacity: 256
+      StorageEncrypted: true
+      VpcSecurityGroupIds:
+        - !Ref DatabaseSecurityGroup
+    Condition: DatabaseCreateNewResource
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub
+        - Stack ${StackTagName} Environment ${EnvironmentTagName} Database ${ResourceName} VPC Subnets
+        - ResourceName: Database
+      SubnetIds: !Ref DefaultVPCSubnets
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - Stack ${StackTagName} Environment ${EnvironmentTagName} Database ${ResourceName} VPC Subnets
+            - ResourceName: Database
+    Condition: DatabaseCreateNewResource
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Database Security Group
+      SecurityGroupIngress:
+        CidrIp: 0.0.0.0/0
+        FromPort: 3306
+        IpProtocol: tcp
+        ToPort: 3306
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - Stack ${StackTagName} Environment ${EnvironmentTagName} Database ${ResourceName} VPC Security Group
+            - ResourceName: Database
+      VpcId: !Ref DefaultVPCId
+    Condition: DatabaseCreateNewResource
+  DatabaseExistingResource:
+    Type: Custom::StackeryExistingResource
+    Properties:
+      ServiceToken: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:stackery-agent-commander
+      Type: database
+      Data: dotnetdemo.cll8zwl89swl.us-east-1.rds.amazonaws.com
+    Condition: DatabaseUseExistingResource
 Parameters:
   StackTagName:
     Type: String
@@ -45,3 +124,15 @@ Parameters:
   EnvironmentTagName:
     Type: String
     Description: Environment Name (injected by Stackery at deployment time)
+  DefaultVPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: AWS account-specific default VPC ID (injected by Stackery at deployment time)
+  DefaultVPCSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: AWS account-specific default VPC subnets (injected by Stackery at deployment time)
+Conditions:
+  DatabaseCreateNewResource: !Equals
+    - 'false'
+    - 'true'
+  DatabaseUseExistingResource: !Not
+    - Condition: DatabaseCreateNewResource
