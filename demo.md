@@ -3,6 +3,10 @@
     1. https://app.stackery.io logged in as demo@stackery.io
 1. Open VS with dotnet-framework-webapi solution open
 1. Authenticate to AWS management console
+1. Set up `demo` profile for AWS
+1. Set system env vars:
+    * AWS_PROFILE=demo
+    * STACKERY_ENV_NAME=development
 
 ### Demo
 1. Show VS with framework solution
@@ -40,7 +44,7 @@
     1. Put project in src
     1. Check the box to put solution and project in the same directory
     1. Choose API type and uncheck Configure for HTTPS (as API Gateway will handle that for us)
-    1. Add .gitignore to src\webapi and add `bin` and `obj` to it
+    1. Add .gitignore to src\webapi and add `bin`, `obj`, and `packages` to it
     1. Add .stackery-config.yaml and add `function-id: WebApi` and `template-path: ../../template.yaml`
     1. Open webapi.csproj
     1. Debug project and navigate to /weatherforecast
@@ -67,3 +71,62 @@
     1. Sync
 1. Run `stackery-deploy` in powershell
 1. Go to deployed api in browser and navigate to /weatherforecast to see the new route
+
+### Now let's extend it to reimplement the Books controller
+1. In stackery editor:
+    1. Add API routes `/api/books` and `/api/books/{proxy+}` and wire them to function
+    1. Add database resource and do use existing with DB address and port from AWS Explorer
+    1. Connect function to DB
+    1. Open environments in a new tab, explain
+    1. Go into development and note the dbPassword secret and how it's in a namespace
+    1. Go back to editor and add secrets resource and connect function to it
+    1. Open function, note the permission that was added and the env var for the namespace
+1. Add webapi-framework existing project to webapi solution (just so we can copy files over easily)
+1. Copy Models folder over
+1. Copy Data folder over
+1. Update Data\webapiContext.cs
+    1. Remove unnecessary usings
+    1. Find and install Microsoft.EntityFrameworkCore
+    1. Add private members:
+        ```c#
+        private Task<GetSecretValueResponse> secretResponseTask;
+        ```
+    1. Remove constructor base call
+    1. Add this line to the constructor: `AmazonSecretsManagerClient client = new AmazonSecretsManagerClient();`
+    1. Right click on class name and generate overrides
+    1. Add the following code to the constructor:
+        ```c#
+        secretResponseTask = client.GetSecretValueAsync(new Amazon.SecretsManager.Model.GetSecretValueRequest
+        {
+            SecretId = $"{Environment.GetEnvironmentVariable("SECRETS_NAMESPACE")}dbPassword"
+        });
+        ```
+    1. Deselect all methods and select OnConfiguring()
+    1. Delete `base.OnConfiguring(optionsBuilder);`
+    1. Add the following code:
+        ```c#
+        GetSecretValueResponse response = secretResponseTask.Result;
+            
+        String dbPassword = response.SecretString;
+        String dbAddress = Environment.GetEnvironmentVariable("DB_ADDRESS");
+        String dbPort = Environment.GetEnvironmentVariable("DB_PORT");
+        ```
+    1. Now we need to connect to a SQL Server: Add NuGet package Microsoft.EntityFrameworkCore.SqlServer
+    1. Add: `optionsBuilder.UseSqlServer($"Data Source={dbAddress},{dbPort};Initial Catalog=books;User ID=root;Password={dbPassword}");`
+1. Copy Controllers/BooksController.cs over
+    1. Open https://docs.microsoft.com/en-us/aspnet/core/migration/webapi?view=aspnetcore-3.1#migrate-models-and-controllers to show there are docs for how to port .NET Framework controllers to .NET Core
+    1. Remove unnecessary usings
+    1. Decorate class with
+        ```c#
+        [Route("api/[controller]")]
+        [ApiController]
+        ```
+    1. Change ApiController base class to Controller
+    1. Decorate each method with something like `[HttpGet]` or `[HttpGet("{id}")]`
+    1. Change IQueryable to IEnumerable
+    1. Change IActionResult to ActionResult<Type>
+    1. Change things like `StatusCode(HttpStatusCode.NoContent)` to `NoContent()
+1. Remove webapi-framework solution
+1. Commit and push changes
+1. Run `stackery deploy` again
+1. Test out /api/books and compare against /api/authors
